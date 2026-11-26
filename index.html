@@ -1877,12 +1877,19 @@ async function comprovanteHTML(r) {
 }
 
 /* ---------------- Impressão ---------------- */
-function imprimir(html) {
+/* nome do arquivo PDF = título da página na hora de imprimir */
+const TITULO_ORIG = document.title;
+function nomeArquivo(partes) {
+  return partes.filter(x => x && String(x).trim()).map(x => String(x).trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")).filter(Boolean).join("_") || TITULO_ORIG;
+}
+function imprimir(html, titulo) {
+  if (titulo) document.title = titulo;
   const pa = $("#printArea"); pa.innerHTML = html;
   const imgs = Array.from(pa.querySelectorAll("img"));
   Promise.all(imgs.map(i => i.complete ? 1 : new Promise(r => { i.onload = i.onerror = r; }))).then(() => setTimeout(() => window.print(), 60));
 }
-window.addEventListener("afterprint", () => { $("#printArea").innerHTML = ""; });
+window.addEventListener("afterprint", () => { $("#printArea").innerHTML = ""; document.title = TITULO_ORIG; });
 
 function scalePreview(box, pxWidthAvail) {
   const mmPx = 96 / 25.4; const w = 210 * mmPx; const k = Math.min(1, pxWidthAvail / w);
@@ -2037,7 +2044,7 @@ $("#btnSalvarImprimir").onclick = async () => {
   await DB.put(r);
   edit.id = r.id; edit.criadoEm = r.criadoEm;
   $("#editInfo").textContent = `Salvo como ${r.id}.`;
-  imprimir(await labelHTML(r, $("#fLayout").value, $("#fComPrint").checked));
+  imprimir(await labelHTML(r, $("#fLayout").value, $("#fComPrint").checked), nomeArquivo(["etiqueta", r.nome, r.pedido, r.nf]));
   toast("Salvo. Abrindo impressão...");
 };
 
@@ -2075,7 +2082,7 @@ function voltarScan() { atual = null; $("#retForm").hidden = true; $("#retScan")
 $("#btnVoltarScan").onclick = voltarScan;
 
 async function tratarLeitura(txt) {
-  if (/ALXR/i.test(txt)) return receberParte(txt);
+  if (/ALX[RS]/i.test(txt)) return receberParte(txt);
   try {
     const p = await decodeQRText(txt);
     const fl = $("#scanflash"); fl.style.display = "block"; setTimeout(() => fl.style.display = "none", 900);
@@ -2095,7 +2102,7 @@ $("#scanInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.pr
     const now = performance.now();
     if (now - last > 120) buf = "";
     last = now;
-    if (e.key === "Enter") { if (/ALX[12R]/i.test(buf) && buf.length > 20) { e.preventDefault(); const v = buf; buf = ""; tratarLeitura(v); } buf = ""; return; }
+    if (e.key === "Enter") { if (/ALX[12RS]/i.test(buf) && buf.length > 20) { e.preventDefault(); const v = buf; buf = ""; tratarLeitura(v); } buf = ""; return; }
     if (e.key.length === 1) buf += e.key;
   });
 })();
@@ -2214,15 +2221,16 @@ $("#btnConfirmar").onclick = async () => {
 };
 
 /* ================= COMPROVANTE ================= */
-let cmpAtual = null;
+let cmpAtual = null, cmpTitulo = "";
 async function abrirComprovante(id) {
   const r = await DB.get(id); if (!r) return;
   cmpAtual = await comprovanteHTML(r);
+  cmpTitulo = nomeArquivo([(r.retirada && r.retirada.por) || r.nome, r.pedido, r.nf]);
   const box = $("#cmpPreview"); box.innerHTML = cmpAtual;
   $("#mCmp").classList.add("on");
   requestAnimationFrame(() => scalePreview(box, box.parentElement.clientWidth - 28));
 }
-$("#btnCmpPrint").onclick = () => { $("#mCmp").classList.remove("on"); imprimir(cmpAtual); };
+$("#btnCmpPrint").onclick = () => { $("#mCmp").classList.remove("on"); imprimir(cmpAtual, cmpTitulo); };
 $("#btnCmpFechar").onclick = () => $("#mCmp").classList.remove("on");
 
 /* ================= REGISTROS ================= */
@@ -2250,7 +2258,7 @@ async function renderLista() {
     if (a === "cmp") abrirComprovante(id);
     if (a === "env") abrirEnvio([id]);
     if (a === "ret") abrirRetirada(r, false);
-    if (a === "etq") imprimir(await labelHTML(r, cfg.layout, cfg.comPrint !== false));
+    if (a === "etq") imprimir(await labelHTML(r, cfg.layout, cfg.comPrint !== false), nomeArquivo(["etiqueta", r.nome, r.pedido, r.nf]));
     if (a === "edit") carregarEdicao(id);
     if (a === "del") { if (confirm(`Excluir o registro de ${r.nome} (${id})?${r.retirada ? "\nATENÇÃO: este registro já tem assinatura." : ""}`)) { await DB.del(id); renderLista(); toast("Excluído."); } }
   });
@@ -2300,7 +2308,7 @@ $("#fileImport").onchange = async e => {
       let mudou = false; const m = Object.assign({}, ex);
       if (!m.print && inc.print) { m.print = inc.print; mudou = true; }
       if (inc.retirada && !m.retirada) { m.retirada = inc.retirada; m.status = "retirado"; mudou = true; assin++; }
-      else if (inc.retirada && m.retirada && inc.retirada.em !== m.retirada.em) conflito++;
+      else if (inc.retirada && m.retirada && Math.floor(new Date(inc.retirada.em) / 1000) !== Math.floor(new Date(m.retirada.em) / 1000)) conflito++;
       if (!m.retirada && (inc.atualizadoEm || "") > (m.atualizadoEm || "")) { for (const k of ["nome", "cc", "nf", "pedido", "obs", "itens"]) m[k] = inc[k]; if (inc.print) m.print = inc.print; mudou = true; }
       if (mudou) { m.atualizadoEm = [m.atualizadoEm || "", inc.atualizadoEm || ""].sort().pop(); await DB.put(m); atual++; }
     }
@@ -2364,22 +2372,30 @@ function encodeStrokes(strokes) {
     return pts.filter((_, i) => keep[i]);
   };
   const ss = strokes.filter(s => s.length);
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9;
+  ss.forEach(s => s.forEach(p => { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); }));
+  const sc = Math.min(1, 220 / Math.max(1, x1 - x0)); // largura máx 220 unidades
+  out.push(0xFE, Math.max(1, Math.round(sc * 200)));
   vu(ss.length);
   for (const s0 of ss) {
-    const s = simp(s0, 0.7);
+    const pts = s0.map(p => ({ x: (p.x - x0) * sc, y: (p.y - y0) * sc }));
+    const s = simp(pts, 0.9);
     const pr = s0.filter(p => p.type === "pen" && p.pressure > 0); const avg = pr.length ? pr.reduce((a, p) => a + p.pressure, 0) / pr.length : 0;
-    out.push(Math.round(avg * 255)); vu(s.length);
+    out.push(Math.round(avg * 15)); vu(s.length);
     let px = 0, py = 0;
-    for (const p of s) { const x = Math.round(p.x * 2), y = Math.round(p.y * 2); vz(x - px); vz(y - py); px = x; py = y; }
+    for (const p of s) { const x = Math.round(p.x), y = Math.round(p.y); vz(x - px); vz(y - py); px = x; py = y; }
   }
   return new Uint8Array(out);
 }
 function decodeStrokes(bytes) {
   let i = 0; const vu = () => { let n = 0, m = 1, b; do { b = bytes[i++]; n += (b & 127) * m; m *= 128; } while (b & 128); return n; };
   const vz = () => { const n = vu(); return n % 2 ? -(n + 1) / 2 : n / 2; };
-  const strokes = []; const ns = vu();
-  for (let k = 0; k < ns; k++) { const pr = bytes[i++] / 255; const np = vu(); let x = 0, y = 0; const s = [];
-    for (let j = 0; j < np; j++) { x += vz(); y += vz(); s.push({ x: x / 2, y: y / 2, pressure: pr || 0.5, type: pr ? "pen" : "mouse" }); }
+  const strokes = [];
+  let div = 2, prMax = 255;
+  if (bytes[0] === 0xFE) { i = 2; div = bytes[1] / 200; prMax = 15; } // formato novo: coords já escaladas
+  const ns = vu();
+  for (let k = 0; k < ns; k++) { const pr = bytes[i++] / prMax; const np = vu(); let x = 0, y = 0; const s = [];
+    for (let j = 0; j < np; j++) { x += vz(); y += vz(); s.push({ x: x / div, y: y / div, pressure: pr || 0.5, type: pr ? "pen" : "mouse" }); }
     strokes.push(s); }
   return strokes;
 }
@@ -2401,22 +2417,38 @@ function strokesToPNG(strokes) {
   return c.toDataURL("image/png");
 }
 
+const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+function b32enc(bytes) { let out = "", bits = 0, val = 0; for (const b of bytes) { val = (val << 8) | b; bits += 8; while (bits >= 5) { out += B32[(val >>> (bits - 5)) & 31]; bits -= 5; } val &= 255; } if (bits > 0) out += B32[(val << (5 - bits)) & 31]; return out; }
+function b32dec(str) { const out = []; let bits = 0, val = 0; for (const c of str.toUpperCase()) { const v = B32.indexOf(c); if (v < 0) continue; val = (val << 5) | v; bits += 5; if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; } val &= 255; } return new Uint8Array(out); }
+const ALNUM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+function qrAlnumSVG(text) { // QR em modo alfanumérico: ~30% menor que o modo byte
+  const qr = new QRLib.QRCode(-1, QRLib.ECL.L);
+  qr.dataList.push({ mode: 2, getLength: () => text.length, write: buf => {
+    let i = 0; for (; i + 1 < text.length; i += 2) buf.put(ALNUM.indexOf(text[i]) * 45 + ALNUM.indexOf(text[i + 1]), 11);
+    if (i < text.length) buf.put(ALNUM.indexOf(text[i]), 6); } });
+  qr.dataCache = null; qr.make();
+  const N = qr.getModuleCount(), q = 4, tot = N + 8; let d = "";
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (qr.isDark(y, x)) d += `M${x + q} ${y + q}h1v1h-1z`;
+  return { n: N, svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${tot} ${tot}" shape-rendering="crispEdges" style="width:100%;height:auto;display:block"><rect width="${tot}" height="${tot}" fill="#fff"/><path d="${d}" fill="#000"/></svg>` };
+}
+
 /* pacote da retirada: [2 bytes tamanho JSON][JSON][assinatura vetor] -> deflate -> base64url -> partes */
-const PARTE_MAX = 700;
+const PARTE_MAX = 1100;
 async function montarPartes(r) {
   const ret = r.retirada;
-  const meta = Object.assign(regToPayload(r), { r: { por: ret.por, doc: ret.doc || "", obs: ret.obs || "", em: ret.em, disp: ret.disp || "" } });
+  // só o que o PC não tem: a etiqueta (itens, print) já está salva no PC
+  const meta = { i: r.id, n: r.nome, c: r.cc || "", f: r.nf || "", r: [ret.por === r.nome ? "" : ret.por, ret.doc || "", ret.obs || "", Math.round(new Date(ret.em).getTime() / 1000).toString(36), ret.disp || ""] };
   const jb = new TextEncoder().encode(JSON.stringify(meta));
   const sb = ret.sigv ? b64urlDec(ret.sigv) : new Uint8Array(0);
   const all = new Uint8Array(2 + jb.length + sb.length); all[0] = jb.length >> 8; all[1] = jb.length & 255; all.set(jb, 2); all.set(sb, 2 + jb.length);
   let data, z = "0";
   if (canZip) { try { data = await streamBytes(all, CompressionStream, "deflate-raw"); z = "1"; } catch (e) { data = all; } } else data = all;
-  const txt = b64urlEnc(data);
+  const txt = b32enc(data);
   const n = Math.ceil(txt.length / PARTE_MAX);
   if (n > 9) throw new Error("Assinatura grande demais para enviar por QR. Use a exportação por arquivo.");
   const tag = String(Math.floor(Math.random() * 9000) + 1000);
   const partes = [];
-  for (let k = 0; k < n; k++) partes.push(`ALXR${k + 1}${n}${tag}${z}${txt.slice(k * PARTE_MAX, (k + 1) * PARTE_MAX)}`);
+  for (let k = 0; k < n; k++) partes.push(`ALXS${k + 1}${n}${tag}${z}${txt.slice(k * PARTE_MAX, (k + 1) * PARTE_MAX)}`);
   return partes;
 }
 
@@ -2436,10 +2468,7 @@ async function mostrarEnvio() {
   const n = envio.partes.length;
   $("#envTitulo").textContent = `${r.nome} · NF ${r.nf || "—"}`;
   $("#envSub").textContent = (envio.fila.length > 1 ? `Retirada ${envio.idx + 1} de ${envio.fila.length} · ` : "") + (n > 1 ? `Parte ${envio.p + 1} de ${n}` : "QR único");
-  const qr = new QRLib.QRCode(-1, QRLib.ECL.L); qr.addData(envio.partes[envio.p]); qr.make();
-  const N = qr.getModuleCount(), q = 4, tot = N + 8; let d = "";
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (qr.isDark(y, x)) d += `M${x + q} ${y + q}h1v1h-1z`;
-  $("#envQR").innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${tot} ${tot}" shape-rendering="crispEdges" style="width:100%;height:auto;display:block"><rect width="${tot}" height="${tot}" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
+  $("#envQR").innerHTML = qrAlnumSVG(envio.partes[envio.p]).svg;
   const ultimaParte = envio.p === n - 1, ultimaRet = envio.idx === envio.fila.length - 1;
   $("#envAnt").disabled = envio.p === 0;
   $("#envProx").textContent = !ultimaParte ? "Próxima parte →" : (ultimaRet ? "Pronto, li no PC ✓" : "Li no PC, próxima retirada →");
@@ -2466,9 +2495,10 @@ async function atualizarNaoEnviados() {
 /* --- PC: receber partes --- */
 const recebendo = {};
 async function receberParte(raw) {
-  let s = String(raw).trim(); const i = s.search(/ALXR/i); s = s.slice(i).replace(/[^A-Za-z0-9_-]/g, "");
-  const k = +s[4], n = +s[5], tag = s.slice(6, 10), z = s[10], data = s.slice(11);
-  if (!(k >= 1 && n >= 1 && k <= n) || !/^\d{4}$/.test(tag)) { toast("QR de envio inválido. Tente de novo."); return; }
+  let s = String(raw).trim(); const i = s.search(/ALX[RS]/i); s = s.slice(i).replace(/[^A-Za-z0-9_-]/g, "");
+  const novoFmt = /S/i.test(s[3]);
+  const k = +s[4], n = +s[5], tag = (novoFmt ? "S" : "R") + s.slice(6, 10), z = s[10], data = s.slice(11);
+  if (!(k >= 1 && n >= 1 && k <= n) || !/^[RS]\d{4}$/.test(tag)) { toast("QR de envio inválido. Tente de novo."); return; }
   const rec = recebendo[tag] = recebendo[tag] || { n, partes: {} };
   rec.partes[k] = data;
   const tem = Object.keys(rec.partes).length;
@@ -2476,18 +2506,19 @@ async function receberParte(raw) {
   if (tem < n) { const falta = []; for (let j = 1; j <= n; j++) if (!rec.partes[j]) falta.push(j); toast(`Parte ${k} de ${n} lida. Agora leia a parte ${falta.join(", ")} no celular.`, 6000); return; }
   delete recebendo[tag];
   let txt = ""; for (let j = 1; j <= n; j++) txt += rec.partes[j];
-  const abrir = async t => { let b = b64urlDec(t); if (z === "1") b = await streamBytes(b, DecompressionStream, "deflate-raw");
+  const abrir = async t => { let b = novoFmt ? b32dec(t) : b64urlDec(t); if (z === "1") b = await streamBytes(b, DecompressionStream, "deflate-raw");
     const jl = (b[0] << 8) | b[1]; const meta = JSON.parse(new TextDecoder().decode(b.subarray(2, 2 + jl))); return { meta, sig: b.subarray(2 + jl) }; };
   let pkt;
   try { pkt = await abrir(txt); }
-  catch (e) { try { pkt = await abrir(txt.replace(/[A-Za-z]/g, c => c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase())); }
+  catch (e) { try { if (novoFmt) throw e; pkt = await abrir(txt.replace(/[A-Za-z]/g, c => c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase())); }
               catch (e2) { toast("Não consegui montar a retirada. Leia as partes de novo (Caps Lock desligado?).", 6000); return; } }
   const { meta, sig: sb } = pkt;
+  if (Array.isArray(meta.r)) { const a = meta.r; meta.r = { por: a[0] || meta.n, doc: a[1], obs: a[2], em: new Date(parseInt(a[3], 36) * 1000).toISOString(), disp: a[4] }; }
   let r = await DB.get(meta.i);
   const novo = !r;
   if (!r) r = payloadToReg(meta);
   if (r.retirada) {
-    if (r.retirada.em === meta.r.em) { toast(`Essa retirada de ${r.nome} já estava registrada no PC.`, 4500); abrirComprovante(r.id); return; }
+    if (Math.floor(new Date(r.retirada.em) / 1000) === Math.floor(new Date(meta.r.em) / 1000)) { toast(`Essa retirada de ${r.nome} já estava registrada no PC.`, 4500); abrirComprovante(r.id); return; }
     toast(`Atenção: ${r.nome} já tinha outra retirada registrada. Mantive a primeira.`, 6000); abrirComprovante(r.id); return;
   }
   const strokes = sb.length ? decodeStrokes(sb) : [];
