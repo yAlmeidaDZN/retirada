@@ -241,6 +241,7 @@ table.items .q{width:70px}.items .u{width:60px}.items .m{width:130px}.items .x{w
       <button class="btn pri lg" id="btnCamera">Ler com a câmera</button>
       <button class="btn lg" id="btnPendentes">Escolher pendente</button>
     </div>
+    <div class="row" style="justify-content:center;margin-top:12px"><button class="btn lg" id="btnNaoEnviados" hidden style="border-color:var(--warn);color:var(--warn)">Enviar ao PC</button></div>
   </div>
 
   <div id="retForm" hidden>
@@ -375,6 +376,18 @@ table.items .q{width:70px}.items .u{width:60px}.items .m{width:130px}.items .x{w
     <div class="row"><button class="btn pri" id="btnCmpPrint">Imprimir / salvar PDF</button><button class="btn" id="btnCmpFechar">Fechar</button></div>
   </div>
   <div class="preview-wrap"><div class="preview-scale" id="cmpPreview"></div></div>
+</div></div>
+
+<div class="modal" id="mEnvio"><div class="box" style="max-width:520px;text-align:center">
+  <div class="row" style="justify-content:space-between;margin-bottom:6px"><b style="font-size:16px" id="envTitulo"></b><button class="btn sm" id="envFechar">Fechar</button></div>
+  <div class="small mut" id="envSub" style="margin-bottom:10px"></div>
+  <div id="envQR" style="background:#fff;padding:6px;border-radius:10px;cursor:pointer"></div>
+  <p class="small mut" style="margin:10px 0">Aponte a pistola do PC para esta tela. Deixe o brilho no máximo.</p>
+  <div class="row" style="justify-content:center">
+    <button class="btn" id="envAnt">← Anterior</button>
+    <button class="btn pri lg" id="envProx">Pronto, li no PC ✓</button>
+  </div>
+  <button class="btn sm" id="envCmp" style="margin-top:10px">Ver comprovante</button>
 </div></div>
 
 <div class="toast" id="toast"></div>
@@ -2017,6 +2030,7 @@ function voltarScan() { atual = null; $("#retForm").hidden = true; $("#retScan")
 $("#btnVoltarScan").onclick = voltarScan;
 
 async function tratarLeitura(txt) {
+  if (/ALXR/i.test(txt)) return receberParte(txt);
   try {
     const p = await decodeQRText(txt);
     const fl = $("#scanflash"); fl.style.display = "block"; setTimeout(() => fl.style.display = "none", 900);
@@ -2036,7 +2050,7 @@ $("#scanInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.pr
     const now = performance.now();
     if (now - last > 120) buf = "";
     last = now;
-    if (e.key === "Enter") { if (/ALX[12]/i.test(buf) && buf.length > 20) { e.preventDefault(); const v = buf; buf = ""; tratarLeitura(v); } buf = ""; return; }
+    if (e.key === "Enter") { if (/ALX[12R]/i.test(buf) && buf.length > 20) { e.preventDefault(); const v = buf; buf = ""; tratarLeitura(v); } buf = ""; return; }
     if (e.key.length === 1) buf += e.key;
   });
 })();
@@ -2133,7 +2147,7 @@ const sig = (() => {
     });
     return c.toDataURL("image/png");
   }
-  return { resize, clear, toPNG, isEmpty: () => !dirty || !strokes.some(s => s.length > 3) };
+  return { resize, clear, toPNG, getStrokes: () => strokes, isEmpty: () => !dirty || !strokes.some(s => s.length > 3) };
 })();
 $("#btnSigLimpar").onclick = () => sig.clear();
 
@@ -2146,12 +2160,12 @@ $("#btnConfirmar").onclick = async () => {
   let r = (await DB.get(atual.id)) || atual;
   if (r.retirada) { toast("Este registro já foi retirado."); return abrirRetirada(r, false); }
   delete r._novo;
-  r.retirada = { por, doc: $("#rDoc").value.trim(), obs: $("#rObs").value.trim(), em: agora, assinatura: sig.toPNG(), disp: cfg.disp };
+  r.retirada = { por, doc: $("#rDoc").value.trim(), obs: $("#rObs").value.trim(), em: agora, assinatura: sig.toPNG(), sigv: b64urlEnc(encodeStrokes(sig.getStrokes())), disp: cfg.disp, enviado: false };
   r.status = "retirado"; r.atualizadoEm = agora;
   await DB.put(r);
   toast("Retirada registrada!");
   voltarScan();
-  abrirComprovante(r.id);
+  if (isMobile()) abrirEnvio([r.id]); else abrirComprovante(r.id);
 };
 
 /* ================= COMPROVANTE ================= */
@@ -2178,6 +2192,7 @@ async function renderLista() {
     <td class="hide-m">${esc(r.cc)}</td><td>${esc(r.nf)}</td><td class="hide-m">${(r.itens || []).length}${r.print ? "" : ` <span class="small mut" title="sem print">·sem print</span>`}</td>
     <td>${r.retirada ? `<span class="chip r">Retirado</span><br><span class="small mut">${fmtData(r.retirada.em)}</span>` : `<span class="chip p">Pendente</span>`}</td>
     <td class="acts">
+      ${r.retirada && r.retirada.sigv && !r.retirada.enviado ? `<button class="btn sm pri" data-a="env" data-id="${esc(r.id)}">Enviar ao PC</button>` : ""}
       ${r.retirada ? `<button class="btn sm" data-a="cmp" data-id="${esc(r.id)}">Comprovante</button>` : `<button class="btn sm pri" data-a="ret" data-id="${esc(r.id)}">Retirar</button>`}
       <button class="btn sm" data-a="etq" data-id="${esc(r.id)}">Etiqueta</button>
       <button class="btn sm" data-a="edit" data-id="${esc(r.id)}">Editar</button>
@@ -2188,6 +2203,7 @@ async function renderLista() {
   $$("#listBody button").forEach(b => b.onclick = async () => {
     const id = b.dataset.id, a = b.dataset.a; const r = await DB.get(id);
     if (a === "cmp") abrirComprovante(id);
+    if (a === "env") abrirEnvio([id]);
     if (a === "ret") abrirRetirada(r, false);
     if (a === "etq") imprimir(await labelHTML(r, cfg.layout, cfg.comPrint !== false));
     if (a === "edit") carregarEdicao(id);
@@ -2275,4 +2291,157 @@ if ("serviceWorker" in navigator && location.protocol === "https:") navigator.se
 renderItens([]);
 const h0 = (location.hash || "").slice(1);
 showTab(["nova", "retirar", "registros", "sync"].includes(h0) ? h0 : (isMobile() ? "retirar" : "nova"));
+
+
+/* ================= ENVIO CELULAR → PC POR QR NA TELA ================= */
+/* assinatura em vetor: varints com zigzag, coordenadas em meio-pixel */
+function encodeStrokes(strokes) {
+  const out = [];
+  const vu = n => { n = Math.max(0, Math.round(n)); while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128); } out.push(n); };
+  const vz = n => { n = Math.round(n); vu(n < 0 ? -2 * n - 1 : 2 * n); };
+  const simp = (pts, eps) => { // Ramer-Douglas-Peucker
+    if (pts.length < 3) return pts.slice();
+    const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1; const st = [[0, pts.length - 1]];
+    while (st.length) { const [a, b] = st.pop(); let md = 0, mi = -1; const A = pts[a], B = pts[b], dx = B.x - A.x, dy = B.y - A.y, L = Math.hypot(dx, dy) || 1;
+      for (let i = a + 1; i < b; i++) { const d = Math.abs(dy * pts[i].x - dx * pts[i].y + B.x * A.y - B.y * A.x) / L; if (d > md) { md = d; mi = i; } }
+      if (md > eps && mi > 0) { keep[mi] = 1; st.push([a, mi], [mi, b]); } }
+    return pts.filter((_, i) => keep[i]);
+  };
+  const ss = strokes.filter(s => s.length);
+  vu(ss.length);
+  for (const s0 of ss) {
+    const s = simp(s0, 0.7);
+    const pr = s0.filter(p => p.type === "pen" && p.pressure > 0); const avg = pr.length ? pr.reduce((a, p) => a + p.pressure, 0) / pr.length : 0;
+    out.push(Math.round(avg * 255)); vu(s.length);
+    let px = 0, py = 0;
+    for (const p of s) { const x = Math.round(p.x * 2), y = Math.round(p.y * 2); vz(x - px); vz(y - py); px = x; py = y; }
+  }
+  return new Uint8Array(out);
+}
+function decodeStrokes(bytes) {
+  let i = 0; const vu = () => { let n = 0, m = 1, b; do { b = bytes[i++]; n += (b & 127) * m; m *= 128; } while (b & 128); return n; };
+  const vz = () => { const n = vu(); return n % 2 ? -(n + 1) / 2 : n / 2; };
+  const strokes = []; const ns = vu();
+  for (let k = 0; k < ns; k++) { const pr = bytes[i++] / 255; const np = vu(); let x = 0, y = 0; const s = [];
+    for (let j = 0; j < np; j++) { x += vz(); y += vz(); s.push({ x: x / 2, y: y / 2, pressure: pr || 0.5, type: pr ? "pen" : "mouse" }); }
+    strokes.push(s); }
+  return strokes;
+}
+function strokesToPNG(strokes) {
+  const w0 = p => { const pr = p.pressure && p.pressure > 0 && p.type === "pen" ? p.pressure : 0.5; return 1.1 + pr * 3.2; };
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  strokes.forEach(s => s.forEach(p => { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }));
+  if (x0 > x1) return null;
+  const m = 12; x0 -= m; y0 -= m; x1 += m; y1 += m;
+  const w = x1 - x0, h = y1 - y0, k = Math.min(2, 900 / w);
+  const c = document.createElement("canvas"); c.width = Math.round(w * k); c.height = Math.round(h * k);
+  const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.setTransform(k, 0, 0, k, -x0 * k, -y0 * k);
+  g.lineCap = "round"; g.lineJoin = "round"; g.strokeStyle = g.fillStyle = "#0b1a3a";
+  strokes.forEach(s => {
+    if (s.length === 1) { g.beginPath(); g.arc(s[0].x, s[0].y, w0(s[0]) / 2, 0, 7); g.fill(); return; }
+    for (let i = 1; i < s.length; i++) { const a = s[Math.max(0, i - 2)], b = s[i - 1], cc = s[i];
+      g.lineWidth = (w0(b) + w0(cc)) / 2; g.beginPath(); g.moveTo((a.x + b.x) / 2, (a.y + b.y) / 2); g.quadraticCurveTo(b.x, b.y, (b.x + cc.x) / 2, (b.y + cc.y) / 2); g.stroke(); }
+  });
+  return c.toDataURL("image/png");
+}
+
+/* pacote da retirada: [2 bytes tamanho JSON][JSON][assinatura vetor] -> deflate -> base64url -> partes */
+const PARTE_MAX = 700;
+async function montarPartes(r) {
+  const ret = r.retirada;
+  const meta = Object.assign(regToPayload(r), { r: { por: ret.por, doc: ret.doc || "", obs: ret.obs || "", em: ret.em, disp: ret.disp || "" } });
+  const jb = new TextEncoder().encode(JSON.stringify(meta));
+  const sb = ret.sigv ? b64urlDec(ret.sigv) : new Uint8Array(0);
+  const all = new Uint8Array(2 + jb.length + sb.length); all[0] = jb.length >> 8; all[1] = jb.length & 255; all.set(jb, 2); all.set(sb, 2 + jb.length);
+  let data, z = "0";
+  if (canZip) { try { data = await streamBytes(all, CompressionStream, "deflate-raw"); z = "1"; } catch (e) { data = all; } } else data = all;
+  const txt = b64urlEnc(data);
+  const n = Math.ceil(txt.length / PARTE_MAX);
+  if (n > 9) throw new Error("Assinatura grande demais para enviar por QR. Use a exportação por arquivo.");
+  const tag = String(Math.floor(Math.random() * 9000) + 1000);
+  const partes = [];
+  for (let k = 0; k < n; k++) partes.push(`ALXR${k + 1}${n}${tag}${z}${txt.slice(k * PARTE_MAX, (k + 1) * PARTE_MAX)}`);
+  return partes;
+}
+
+/* --- celular: mostrar QR(s) --- */
+let envio = { fila: [], idx: 0, partes: [], p: 0 };
+async function abrirEnvio(ids) {
+  const regs = [];
+  for (const id of ids) { const r = await DB.get(id); if (r && r.retirada && r.retirada.sigv) regs.push(r); }
+  if (!regs.length) { toast("Nada para enviar por QR (registros antigos só por arquivo)."); return; }
+  envio = { fila: regs, idx: 0, partes: [], p: 0 };
+  $("#mEnvio").classList.add("on");
+  await mostrarEnvio();
+}
+async function mostrarEnvio() {
+  const r = envio.fila[envio.idx];
+  if (!envio.partes.length) { try { envio.partes = await montarPartes(r); } catch (e) { toast(e.message, 5000); return; } envio.p = 0; }
+  const n = envio.partes.length;
+  $("#envTitulo").textContent = `${r.nome} · NF ${r.nf || "—"}`;
+  $("#envSub").textContent = (envio.fila.length > 1 ? `Retirada ${envio.idx + 1} de ${envio.fila.length} · ` : "") + (n > 1 ? `Parte ${envio.p + 1} de ${n}` : "QR único");
+  const qr = new QRLib.QRCode(-1, QRLib.ECL.L); qr.addData(envio.partes[envio.p]); qr.make();
+  const N = qr.getModuleCount(), q = 4, tot = N + 8; let d = "";
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (qr.isDark(y, x)) d += `M${x + q} ${y + q}h1v1h-1z`;
+  $("#envQR").innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${tot} ${tot}" shape-rendering="crispEdges" style="width:100%;height:auto;display:block"><rect width="${tot}" height="${tot}" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
+  const ultimaParte = envio.p === n - 1, ultimaRet = envio.idx === envio.fila.length - 1;
+  $("#envAnt").disabled = envio.p === 0;
+  $("#envProx").textContent = !ultimaParte ? "Próxima parte →" : (ultimaRet ? "Pronto, li no PC ✓" : "Li no PC, próxima retirada →");
+}
+async function envioAvancar() {
+  if (envio.p < envio.partes.length - 1) { envio.p++; return mostrarEnvio(); }
+  const r = envio.fila[envio.idx]; r.retirada.enviado = true; r.retirada.enviadoEm = new Date().toISOString(); await DB.put(r);
+  if (envio.idx < envio.fila.length - 1) { envio.idx++; envio.partes = []; return mostrarEnvio(); }
+  $("#mEnvio").classList.remove("on"); toast("Enviado ao PC."); atualizarNaoEnviados();
+  if ($("#tab-registros").classList.contains("on")) renderLista();
+}
+$("#envProx").onclick = envioAvancar;
+$("#envQR").onclick = () => { if (envio.p < envio.partes.length - 1) { envio.p++; mostrarEnvio(); } };
+$("#envAnt").onclick = () => { if (envio.p > 0) { envio.p--; mostrarEnvio(); } };
+$("#envFechar").onclick = () => { $("#mEnvio").classList.remove("on"); atualizarNaoEnviados(); };
+$("#envCmp").onclick = () => { const r = envio.fila[envio.idx]; $("#mEnvio").classList.remove("on"); abrirComprovante(r.id); };
+async function atualizarNaoEnviados() {
+  const pend = (await DB.all()).filter(r => r.retirada && r.retirada.sigv && !r.retirada.enviado);
+  const b = $("#btnNaoEnviados");
+  b.hidden = !pend.length; b.textContent = `Enviar ao PC (${pend.length})`;
+  b.onclick = () => abrirEnvio(pend.sort((a, c) => a.retirada.em.localeCompare(c.retirada.em)).map(r => r.id));
+}
+
+/* --- PC: receber partes --- */
+const recebendo = {};
+async function receberParte(raw) {
+  let s = String(raw).trim(); const i = s.search(/ALXR/i); s = s.slice(i).replace(/[^A-Za-z0-9_-]/g, "");
+  const k = +s[4], n = +s[5], tag = s.slice(6, 10), z = s[10], data = s.slice(11);
+  if (!(k >= 1 && n >= 1 && k <= n) || !/^\d{4}$/.test(tag)) { toast("QR de envio inválido. Tente de novo."); return; }
+  const rec = recebendo[tag] = recebendo[tag] || { n, partes: {} };
+  rec.partes[k] = data;
+  const tem = Object.keys(rec.partes).length;
+  const fl = $("#scanflash"); fl.textContent = n > 1 ? `Parte ${tem}/${n}` : "QR lido"; fl.style.display = "block"; setTimeout(() => { fl.style.display = "none"; fl.textContent = "QR lido"; }, 1200);
+  if (tem < n) { const falta = []; for (let j = 1; j <= n; j++) if (!rec.partes[j]) falta.push(j); toast(`Parte ${k} de ${n} lida. Agora leia a parte ${falta.join(", ")} no celular.`, 6000); return; }
+  delete recebendo[tag];
+  let txt = ""; for (let j = 1; j <= n; j++) txt += rec.partes[j];
+  const abrir = async t => { let b = b64urlDec(t); if (z === "1") b = await streamBytes(b, DecompressionStream, "deflate-raw");
+    const jl = (b[0] << 8) | b[1]; const meta = JSON.parse(new TextDecoder().decode(b.subarray(2, 2 + jl))); return { meta, sig: b.subarray(2 + jl) }; };
+  let pkt;
+  try { pkt = await abrir(txt); }
+  catch (e) { try { pkt = await abrir(txt.replace(/[A-Za-z]/g, c => c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase())); }
+              catch (e2) { toast("Não consegui montar a retirada. Leia as partes de novo (Caps Lock desligado?).", 6000); return; } }
+  const { meta, sig: sb } = pkt;
+  let r = await DB.get(meta.i);
+  const novo = !r;
+  if (!r) r = payloadToReg(meta);
+  if (r.retirada) {
+    if (r.retirada.em === meta.r.em) { toast(`Essa retirada de ${r.nome} já estava registrada no PC.`, 4500); abrirComprovante(r.id); return; }
+    toast(`Atenção: ${r.nome} já tinha outra retirada registrada. Mantive a primeira.`, 6000); abrirComprovante(r.id); return;
+  }
+  const strokes = sb.length ? decodeStrokes(sb) : [];
+  r.retirada = Object.assign({}, meta.r, { assinatura: strokesToPNG(strokes), sigv: sb.length ? b64urlEnc(sb) : "", enviado: true, recebidoEm: new Date().toISOString() });
+  r.status = "retirado"; r.atualizadoEm = new Date().toISOString();
+  await DB.put(r);
+  if (navigator.vibrate) navigator.vibrate(80);
+  toast(`Retirada de ${r.retirada.por} recebida${novo ? " (etiqueta não estava neste PC; sem print)" : ""}.`, 4500);
+  if ($("#tab-registros").classList.contains("on")) renderLista();
+  abrirComprovante(r.id);
+}
+atualizarNaoEnviados();
 </script></body></html>
