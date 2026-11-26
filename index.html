@@ -338,6 +338,10 @@ table.items .q{width:70px}.items .u{width:60px}.items .m{width:130px}.items .x{w
       <label class="f" style="margin-top:10px">Nome deste aparelho (fica registrado na retirada)
         <input id="cfgDisp" autocomplete="off" placeholder="Ex.: Celular almox / PC compras">
       </label>
+      <label class="f" style="margin-top:10px">Endereço do app no celular (GitHub Pages)
+        <input id="cfgUrl" autocomplete="off" placeholder="https://seu-usuario.github.io/retiradas/">
+      </label>
+      <p class="hint">Preencha no PC. Assim o QR da etiqueta abre o app direto pela câmera do celular.</p>
       <div style="margin-top:14px" class="small mut" id="storageInfo"></div>
       <p class="hint">Os dados ficam no navegador deste aparelho. Limpar os dados do navegador apaga os registros, então exporte um arquivo de backup de vez em quando.</p>
       <div class="row" style="margin-top:8px"><button class="btn bad sm" id="btnApagarTudo">Apagar todos os registros deste aparelho</button></div>
@@ -351,6 +355,17 @@ table.items .q{width:70px}.items .u{width:60px}.items .m{width:130px}.items .x{w
   <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0;font-size:17px">Aponte para o QR</h2><button class="btn sm" id="btnCamFechar">Fechar</button></div>
   <video id="camVideo" playsinline muted></video>
   <p class="hint" id="camMsg"></p>
+</div></div>
+
+<div class="modal" id="mCamAjuda"><div class="box" style="max-width:480px">
+  <h2 style="margin:0 0 8px;font-size:17px">Use a câmera do celular</h2>
+  <ol style="padding-left:18px;line-height:1.7;margin:0 0 12px">
+    <li>Abra o app <b>Câmera</b> do Samsung.</li>
+    <li>Aponte para o QR da etiqueta. Vai aparecer um link embaixo do QR.</li>
+    <li>Toque no link: este app abre direto na retirada.</li>
+  </ol>
+  <p class="small mut" style="margin:0 0 12px">Se a câmera não mostrar o link, ative em Câmera → Configurações → <b>Escanear códigos QR</b>. Etiquetas impressas antes de configurar o endereço do app no PC não abrem assim: use "Escolher pendente".</p>
+  <div class="row end"><button class="btn pri" onclick="document.getElementById('mCamAjuda').classList.remove('on')">Entendi</button></div>
 </div></div>
 
 <div class="modal" id="mColar"><div class="box">
@@ -1666,7 +1681,7 @@ function toast(msg, ms = 2600) { const t = $("#toast"); t.textContent = msg; t.c
 
 /* ---------------- Config ---------------- */
 const CFG_KEY = "alx_cfg";
-let cfg = { local: "Almoxarifado Fazenda Tucunaré", disp: "", layout: "full", comPrint: true, lastExport: null };
+let cfg = { local: "Almoxarifado Fazenda Tucunaré", disp: "", appUrl: "", layout: "full", comPrint: true, lastExport: null };
 try { Object.assign(cfg, JSON.parse(localStorage.getItem(CFG_KEY) || "{}")); } catch (e) {}
 function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {} }
 if (!cfg.disp) { cfg.disp = /Android|iPhone|Mobile/i.test(navigator.userAgent) ? "Celular" : "PC"; saveCfg(); }
@@ -1772,8 +1787,17 @@ function fitMm(text, widthMm, maxMm, font = '900 100px "Arial Black", Arial, san
 }
 
 /* ---------------- Etiqueta ---------------- */
+function appBaseUrl() {
+  let u = (cfg.appUrl || "").trim();
+  if (!u && location.protocol === "https:") u = location.origin + location.pathname;
+  if (!u) return "";
+  u = u.replace(/#.*$/, "").replace(/index\.html$/i, "");
+  if (!/\/$/.test(u)) u += "/";
+  return u;
+}
+async function qrEtiqueta(r) { const c = await encodeQR(r); const u = appBaseUrl(); return u ? `${u}#r=${c}` : c; }
 async function labelHTML(r, layout, comPrint) {
-  const qrText = await encodeQR(r);
+  const qrText = await qrEtiqueta(r);
   const full = layout !== "half";
   const W = 190; // largura útil em mm
   const nome = (r.nome || "NOME").toUpperCase();
@@ -2059,7 +2083,7 @@ $("#scanInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.pr
 let camStream = null, camLoop = null;
 $("#btnCamera").onclick = async () => {
   if (!("BarcodeDetector" in window)) {
-    toast("Este navegador não lê QR pela câmera aqui. Use a pistola Zebra ou 'Escolher pendente'.", 5000); return;
+    $("#mCamAjuda").classList.add("on"); return;
   }
   $("#mCam").classList.add("on"); $("#camMsg").textContent = "Abrindo a câmera...";
   try {
@@ -2271,7 +2295,8 @@ async function renderStorage() {
   try { if (navigator.storage && navigator.storage.persisted) pers = (await navigator.storage.persisted()) ? " · armazenamento protegido" : ""; } catch (e) {}
   $("#storageInfo").innerHTML = `${all.length} registros (${pend} pendentes)${est}${pers}<br>Último export deste aparelho: ${cfg.lastExport ? fmtData(cfg.lastExport) : "nunca"}`;
 }
-$("#cfgLocal").value = cfg.local; $("#cfgDisp").value = cfg.disp;
+$("#cfgLocal").value = cfg.local; $("#cfgDisp").value = cfg.disp; $("#cfgUrl").value = cfg.appUrl || "";
+$("#cfgUrl").addEventListener("input", e => { cfg.appUrl = e.target.value.trim(); saveCfg(); });
 $("#localNomeHdr").textContent = cfg.local;
 $("#cfgLocal").addEventListener("input", e => { cfg.local = e.target.value; $("#localNomeHdr").textContent = cfg.local; saveCfg(); });
 $("#cfgDisp").addEventListener("input", e => { cfg.disp = e.target.value; saveCfg(); });
@@ -2289,7 +2314,17 @@ if ("serviceWorker" in navigator && location.protocol === "https:") navigator.se
 
 /* início */
 renderItens([]);
+function lerHashQR() {
+  const h = decodeURIComponent(location.hash || "");
+  const m = h.match(/r=(ALX[12][A-Za-z0-9_-]+)/);
+  if (!m) return false;
+  history.replaceState(null, "", location.pathname + "#retirar");
+  tratarLeitura(m[1]);
+  return true;
+}
+window.addEventListener("hashchange", () => { lerHashQR(); });
 const h0 = (location.hash || "").slice(1);
+if (lerHashQR()) { /* abriu pela câmera do celular */ } else
 showTab(["nova", "retirar", "registros", "sync"].includes(h0) ? h0 : (isMobile() ? "retirar" : "nova"));
 
 
